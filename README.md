@@ -48,7 +48,6 @@ sudo chmod +x /usr/local/bin/dbox
 ## Prepare Containers
 
 dbox init         # Run this once to set up desktop integration
-dbox desktop-sync
 
 
 
