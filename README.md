@@ -15,7 +15,7 @@
 
 📦 What is dbox?
 
-dbox is a universal package manager interface that works inside Distrobox containers.
+dbox is a universal package manager interface that works Terminal.
 It allows you to manage packages across multiple distributions — such as those using apt, dnf, pacman, yay, apk, zypper, xbps, and more — using a single, unified command syntax.
 🔍 Why not just use Distrobox?
 
