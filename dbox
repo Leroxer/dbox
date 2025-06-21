@@ -1,0 +1,532 @@
+#!/bin/bash
+
+# dbox - Universal package manager based on Distrobox
+# Usage: dbox <package_manager> <command> [packages...]
+
+VERSION="1.0.0"
+CONFIG_DIR="$HOME/.config/dbox"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+# Default container configuration
+declare -A CONTAINERS=(
+    ["apt"]="ubuntu"
+    ["apt-get"]="ubuntu"
+    ["apk"]="alpine" 
+    ["dnf"]="fedora"
+    ["pacman"]="arch"
+    ["yay"]="arch"
+    ["zypper"]="opensuse"
+    ["xbps"]="void"
+)
+
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Help function
+show_help() {
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║                                                              ║"
+    echo "║    ██████╗ ██████╗  ██████╗ ██╗  ██╗                         ║"
+    echo "║    ██╔══██╗██╔══██╗██╔═══██╗╚██╗██╔╝                         ║"
+    echo "║    ██║  ██║██████╔╝██║   ██║ ╚███╔╝                          ║"
+    echo "║    ██║  ██║██╔══██╗██║   ██║ ██╔██╗                          ║"
+    echo "║    ██████╔╝██████╔╝╚██████╔╝██╔╝ ██╗                         ║"
+    echo "║    ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝                         ║"
+    echo "║                                                              ║"
+    echo "║           Universal Linux Package Manager                    ║"
+    echo "║                         v0.1                                 ║"
+    echo "║                                                              ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+    echo "For feedback: dbox.feedback@gmail.com"
+    echo ""
+    echo "Usage:"
+    echo "  dbox <package_manager> <command> [packages...]"
+    echo ""
+    echo "Supported package managers:"
+    echo "  apt     - Ubuntu/Debian (apt install, apt update, apt search, etc.)"
+    echo "  apt-get - Ubuntu/Debian (apt-get install, apt-get update, apt-get search, etc.)"
+    echo "  apk     - Alpine Linux (apk add, apk update, apk search, etc.)"
+    echo "  dnf     - Fedora (dnf install, dnf update, dnf search, etc.)"
+    echo "  pacman  - Arch Linux (pacman -S, pacman -Syu, pacman -Ss, etc.)"
+    echo "  yay     - Arch AUR helper (yay -S, yay -Syu, yay -Ss, etc.)"
+    echo "  zypper  - openSUSE (zypper install, zypper update, zypper search, etc.)"
+    echo "  xbps    - Void Linux (xbps-install, xbps-query, etc.)"
+    echo ""
+    echo "Commands:"
+    echo "  dbox init     - Initialize containers"
+    echo "  dbox list     - List existing containers"
+    echo "  dbox clean    - Clean up unused containers"
+    echo "  dbox config   - Edit configuration"
+    echo "  dbox search   - Search for a package (dbox search <term> [package_manager])"
+    echo "  dbox off      - Stop all containers"
+    echo "  dbox app-list <pm>   - List all application shortcuts (desktop entries) in the container"
+    echo "  dbox shct <pm> <name>  - Create a desktop shortcut for the specified application"
+    echo "  dbox shct <pm> <name> --remove  -Remove the desktop shortcut for the specified application"
+}
+
+# Log function
+log() {
+    echo -e "${BLUE}[dbox]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[dbox ERROR]${NC} $1" >&2
+}
+
+success() {
+    echo -e "${GREEN}[dbox]${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}[dbox WARN]${NC} $1"
+}
+
+# Create configuration
+create_config() {
+    mkdir -p "$CONFIG_DIR"
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        cat > "$CONFIG_FILE" << EOF
+# dbox configuration file
+# Container mappings: package_manager=container_name
+
+apt=ubuntu-latest
+apt-get=ubuntu-latest
+apk=alpine-latest
+dnf=fedora-latest
+pacman=arch-latest
+yay=arch-latest
+zypper=opensuse-latest
+xbps=void-latest
+EOF
+        log "Configuration file created: $CONFIG_FILE"
+    fi
+}
+
+# Load configuration
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        while IFS='=' read -r key value; do
+            [[ $key =~ ^[[:space:]]*# ]] && continue
+            [[ -z "$key" ]] && continue
+            CONTAINERS["$key"]="$value"
+        done < "$CONFIG_FILE"
+    fi
+}
+
+# Check if container exists
+container_exists() {
+    local container_name="$1"
+    distrobox list | awk -F '|' 'NR>1{ name=$2; gsub(/^[ \t]+|[ \t]+$/, "", name); print name; }' | grep -Fxq -- "$container_name"
+}
+
+# Create container
+create_container() {
+    local pm="$1"
+    local container_name="${CONTAINERS[$pm]}"
+    
+    if [[ -z "$container_name" ]]; then
+        error "Unsupported package manager: $pm"
+        return 1
+    fi
+    
+    log "Creating container: $container_name"
+    
+    case "$pm" in
+        "apt"|"apt-get")
+            distrobox create --name "$container_name" --image ubuntu:latest --additional-packages "software-properties-common"
+            ;;
+        "apk")
+            distrobox create --name "$container_name" --image alpine:latest
+            ;;
+        "dnf")
+            distrobox create --name "$container_name" --image fedora:latest
+            ;;
+        "pacman"|"yay")
+            distrobox create --name "$container_name" --image archlinux:latest
+            # Install yay in Arch container
+            if [[ "$pm" == "yay" ]]; then
+                log "Installing yay..."
+                distrobox enter "$container_name" -- bash -c "
+                    sudo pacman -Syu --noconfirm && 
+                    sudo pacman -S --noconfirm base-devel git &&
+                    git clone https://aur.archlinux.org/yay.git /tmp/yay &&
+                    cd /tmp/yay && makepkg -si --noconfirm
+                "
+            fi
+            ;;
+        "zypper")
+            distrobox create --name "$container_name" --image opensuse/tumbleweed:latest
+            ;;
+        "xbps")
+            distrobox create --name "$container_name" --image ghcr.io/void-linux/void-linux:latest-full-x86_64
+            ;;
+        *)
+            error "Unknown package manager: $pm"
+            return 1
+            ;;
+    esac
+    
+    success "Container ready: $container_name"
+}
+
+# Package search function
+search_packages() {
+    local search_term="$1"
+    local selected_pm="$2"
+    
+    if [[ -z "$search_term" ]]; then
+        error "No search term specified"
+        return 1
+    fi
+    
+    log "Searching for package: '$search_term'"
+    echo ""
+    
+    # Search in a specific package manager
+    if [[ -n "$selected_pm" ]]; then
+        search_in_pm "$selected_pm" "$search_term"
+        return
+    fi
+    
+    # Search in all package managers
+    for pm in apt apt-get apk dnf pacman yay zypper xbps; do
+        container_name="${CONTAINERS[$pm]}"
+        if container_exists "$container_name"; then
+            echo -e "${BLUE}=== $pm ($container_name) ===${NC}"
+            search_in_pm "$pm" "$search_term"
+            echo ""
+        fi
+    done
+}
+
+# Search in a specific package manager
+search_in_pm() {
+    local pm="$1"
+    local search_term="$2"
+    local container_name="${CONTAINERS[$pm]}"
+    
+    case "$pm" in
+        "apt")
+            distrobox enter "$container_name" -- apt search "$search_term" 2>/dev/null | head -20
+            ;;
+        "apt-get")
+            distrobox enter "$container_name" -- apt-get search "$search_term" 2>/dev/null | head -20
+            ;;
+        "apk")
+            distrobox enter "$container_name" -- apk search "$search_term" 2>/dev/null | head -20
+            ;;
+        "dnf")
+            distrobox enter "$container_name" -- dnf search "$search_term" 2>/dev/null | head -20
+            ;;
+        "pacman")
+            distrobox enter "$container_name" -- pacman -Ss "$search_term" 2>/dev/null | head -20
+            ;;
+        "yay")
+            distrobox enter "$container_name" -- yay -Ss "$search_term" 2>/dev/null | head -20
+            ;;
+        "zypper")
+            distrobox enter "$container_name" -- zypper search "$search_term" 2>/dev/null | head -20
+            ;;
+        "xbps")
+            distrobox enter "$container_name" -- xbps-query -Rs "$search_term" 2>/dev/null | head -20
+            ;;
+    esac
+}
+
+# Main command execution function
+run_command() {
+    local pm="$1"
+    shift
+    local container_name="${CONTAINERS[$pm]}"
+    
+    if [[ -z "$container_name" ]]; then
+        error "Unsupported package manager: $pm"
+        return 1
+    fi
+    
+    # Create container if it doesn't exist
+    if ! container_exists "$container_name"; then
+        warn "Container not found, creating..."
+        create_container "$pm" || return 1
+    fi
+    
+    # Run the command
+    log "Running command: $pm $*"
+    
+    # Adjust command for package manager
+    case "$pm" in
+        "apt")
+            if [[ "$1" =~ ^(install|update|upgrade|remove)$ ]]; then
+                distrobox enter "$container_name" -- sudo apt "$@"
+            else
+                distrobox enter "$container_name" -- apt "$@"
+            fi
+            ;;
+        "apt-get")
+            if [[ "$1" =~ ^(install|update|upgrade|remove)$ ]]; then
+                distrobox enter "$container_name" -- sudo apt-get "$@"
+            else
+                distrobox enter "$container_name" -- apt-get "$@"
+            fi
+            ;;
+        "apk")
+            if [[ "$1" =~ ^(add|update|upgrade|del)$ ]]; then
+                distrobox enter "$container_name" -- sudo apk "$@"
+            else
+                distrobox enter "$container_name" -- apk "$@"
+            fi
+            ;;
+        "dnf")
+            if [[ "$1" =~ ^(install|update|upgrade|remove)$ ]]; then
+                distrobox enter "$container_name" -- sudo dnf "$@"
+            else
+                distrobox enter "$container_name" -- dnf "$@"
+            fi
+            ;;
+        "pacman")
+            distrobox enter "$container_name" -- sudo pacman "$@"
+            ;;
+        "zypper")
+            if [[ "$1" =~ ^(install|update|upgrade|remove)$ ]]; then
+                distrobox enter "$container_name" -- sudo zypper "$@"
+            else
+                distrobox enter "$container_name" -- zypper "$@"
+            fi
+            ;;
+        "xbps")
+            if [[ "$1" =~ ^(xbps-install|xbps-remove)$ ]]; then
+                distrobox enter "$container_name" -- sudo "$@"
+            else
+                distrobox enter "$container_name" -- "$@"
+            fi
+            ;;
+        "yay")
+            distrobox enter "$container_name" -- yay "$@"
+            ;;
+        *)
+            distrobox enter "$container_name" -- "$pm" "$@"
+            ;;
+    esac
+}
+
+# List containers
+list_containers() {
+    log "Current dbox containers:"
+    for pm in "${!CONTAINERS[@]}"; do
+        container_name="${CONTAINERS[$pm]}"
+        if container_exists "$container_name"; then
+            echo -e "  ${GREEN}✓${NC} $pm -> $container_name"
+        else
+            echo -e "  ${RED}✗${NC} $pm -> $container_name (not found)"
+        fi
+    done
+}
+
+# Initialize all containers
+init_containers() {
+    log "Initializing all containers..."
+    for pm in "${!CONTAINERS[@]}"; do
+        container_name="${CONTAINERS[$pm]}"
+        if ! container_exists "$container_name"; then
+            create_container "$pm"
+        else
+            success "Container already exists: $container_name"
+        fi
+    done
+}
+
+add_shortcut() {
+    local pm="$1"
+    local app="$2"
+    local container_name="${CONTAINERS[$pm]}"
+    if [[ -z "$container_name" ]]; then
+        error "No container defined for $pm!"
+        exit 1
+    fi
+    log "Adding shortcut for $app in container $container_name..."
+    distrobox enter "$container_name" -- distrobox-export --app "$app"
+    success "Shortcut added: $app"
+}
+
+remove_shortcut() {
+    local pm="$1"
+    local app="$2"
+    local container_name="${CONTAINERS[$pm]}"
+    if [[ -z "$container_name" ]]; then
+        error "No container defined for $pm!"
+        exit 1
+    fi
+    log "Removing shortcut for $app in container $container_name..."
+    # Find the desktop ID by searching for .desktop files whose Exec line contains the app name
+    desktop_id=$(distrobox enter "$container_name" -- bash -c '
+      for d in /usr/share/applications "$HOME/.local/share/applications"; do
+        [ -d "$d" ] || continue
+        for f in "$d"/*.desktop; do
+          [ -e "$f" ] || continue
+          exec=$(grep -m1 "^Exec=" "$f" | cut -d "=" -f2-)
+          name=$(basename "$f" .desktop)
+          if [[ "$exec" == *'"$app"'* || "$exec" == *"/'$app'"* ]]; then
+            echo "$name"
+            break 2
+          fi
+        done
+      done
+    ')
+    if [[ -z "$desktop_id" ]]; then
+        error "No desktop id found for '$app'!"
+        exit 1
+    fi
+    # Remove from both user and system directories
+    for d in "$HOME/.local/share/applications" "/usr/share/applications"; do
+        f="$d/${container_name}-${desktop_id}.desktop"
+        if [[ -e "$f" ]]; then
+            echo "Deleting: $f"
+            rm -f "$f"
+        fi
+    done
+    success "Shortcut removed: ${container_name}-${desktop_id}.desktop"
+}
+
+# Cleanup
+clean_containers() {
+    log "Cleaning up unused containers..."
+    for pm in "${!CONTAINERS[@]}"; do
+        container_name="${CONTAINERS[$pm]}"
+        if container_exists "$container_name"; then
+            read -p "Delete container: $container_name? (y/N): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                distrobox rm "$container_name"
+            fi
+        fi
+    done
+}
+
+# Stop all containers
+stop_all_containers() {
+    log "Stopping all containers..."
+    for pm in "${!CONTAINERS[@]}"; do
+        container_name="${CONTAINERS[$pm]}"
+        if container_exists "$container_name"; then
+            distrobox stop "$container_name"
+            success "$container_name stopped."
+        else
+            warn "$container_name not found, skipping."
+        fi
+    done
+}
+
+# Show application list
+list_apps() {
+    local pm="$1"
+    local container_name="${CONTAINERS[$pm]}"
+    log "Application shortcuts in container $container_name:"
+    distrobox enter "$container_name" -- bash -c '
+      for d in /usr/share/applications "$HOME/.local/share/applications"; do
+        [ -d "$d" ] || continue
+        for f in "$d"/*.desktop; do
+          [ -e "$f" ] || continue
+          exec=$(grep -m1 "^Exec=" "$f" | cut -d "=" -f2- | awk "{print \$1}")
+          if [[ -n "$exec" ]]; then
+            app=$(basename "$exec")
+            echo "$app"
+          fi
+        done
+      done
+    ' | sort -u
+}
+
+# Main program
+main() {
+    # Prepare configuration
+    create_config
+    load_config
+    
+    # Check Distrobox
+    if ! command -v distrobox &> /dev/null; then
+        error "distrobox is not installed. Please install distrobox first."
+        exit 1
+    fi
+    
+    # Argument check
+    if [[ $# -eq 0 ]]; then
+        show_help
+        exit 0
+    fi
+    
+    case "$1" in
+        "help"|"-h"|"--help")
+            show_help
+            ;;
+        "init")
+            init_containers
+            ;;
+        "shct")
+            if [[ $# -lt 3 ]]; then
+                error "Usage: dbox shct <pm> <app> [--remove]"
+                exit 1
+            fi
+            pm="$2"
+            app="$3"
+            if [[ "$4" == "--remove" ]]; then
+                remove_shortcut "$pm" "$app"
+            else
+                add_shortcut "$pm" "$app"
+            fi
+            ;;
+        "app-list")
+            if [[ $# -lt 2 ]]; then
+                error "No package manager specified. Example: dbox apt app-list"
+                exit 1
+            fi
+            list_apps "$2"
+            ;;
+        "list")
+            list_containers
+            ;;
+        "clean")
+            clean_containers
+            ;;
+        "config")
+            ${EDITOR:-nano} "$CONFIG_FILE"
+            ;;
+        "search")
+            if [[ $# -lt 2 ]]; then
+                error "No search term specified. Example: dbox search firefox"
+                exit 1
+            fi
+            search_packages "$2" "$3"
+            ;;
+        "off")
+            stop_all_containers
+            ;;
+        "zypper"|"xbps"|"apt-get")
+            if [[ $# -lt 2 ]]; then
+                error "No command specified. Example: dbox $1 install firefox"
+                exit 1
+            fi
+            run_command "$@"
+            ;;
+        "apt"|"apk"|"dnf"|"pacman"|"yay")
+            if [[ $# -lt 2 ]]; then
+                error "No command specified. Example: dbox $1 install firefox"
+                exit 1
+            fi
+            run_command "$@"
+            ;;
+        *)
+            error "Unknown command: $1"
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+# Run the program
+main "$@"
