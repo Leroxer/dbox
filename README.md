@@ -41,7 +41,7 @@ Budgie
 
 ## Installation
 
-sudo curl -o /usr/local/bin/dbox https://raw.githubusercontent.com/leroxer/dbox/dbox
+sudo curl -o /usr/local/bin/dbox https://github.com/Leroxer/dbox/blob/main/dbox
 sudo chmod +x /usr/local/bin/dbox
 
 
